@@ -16,6 +16,7 @@
 
 <script id="script">
 
+  //PDFJS.disableWorker = true;
   var resolver = null;
 
   pdfs=[{
@@ -41,12 +42,13 @@
         writable:true
       },
       render: {
-        value:function(){
+        value:function(scale){
           var page = Object.getPrototypeOf(this);
-          var viewport = page.getViewport(this.scale);
+          var scale = scale || this.scale;
+          var viewport = page.getViewport(scale);
           this.canvas.height = viewport.height;
           this.canvas.width = viewport.width;
-          page.render({
+          return page.render({
             canvasContext:this.canvas.getContext('2d'),
             viewport:viewport
           });
@@ -55,28 +57,41 @@
     });
   };
 
-  function renderPage(pdf, page){
+  function renderPage(page){
 
-      var canvas = document.createElement('canvas');
+      var canvas   = document.createElement('canvas');
       var renderer = createRenderer(page,canvas);
+      var result   = renderer.render();
       document.body.appendChild(canvas);
 
       renderers.push(renderer);
-      renderer.render();
 
-      return pdf;
+      return result;
   };
 
   function renderMultiplePages(pages, pdf){
-    pages.forEach(function(page){
-      chain = chain.then(pdf.getPage.bind(pdf,page)).then(renderPage.bind(undefined,pdf));
+    return new Promise(function(resolve, reject){
+      var pageChain = Promise.resolve(null);
+
+      pages.forEach(function(page){
+        pageChain = pageChain.then(pdf.getPage.bind(pdf, page)).then(renderPage);
+      });
+      pageChain.then(function(){
+        console.log('resolve');
+        resolve(pdf);
+      });
     });
   };
 
 
   var chain = Promise.resolve(null);
   pdfs.forEach(function(pdfMeta){
-    chain = chain.then(PDFJS.getDocument.bind(PDFJS, pdfMeta.url)).then(renderMultiplePages.bind(undefined,pdfMeta.pages));
+    chain = chain.then(PDFJS.getDocument.bind(PDFJS, pdfMeta.url))
+                .then(renderMultiplePages.bind(undefined, pdfMeta.pages))
+                .then(function(pdf){
+                  console.log('terminate');
+                  pdf.transport.worker.terminate();
+                });
   });
 
 </script>
