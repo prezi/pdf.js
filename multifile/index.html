@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>multiple file loader</title>
+</head>
+<body>
+
+<h1>multiple file loader</h1>
+<div id="pages"></div>
+
+<!-- for legacy browsers add compatibility.js -->
+<!--<script src="../compatibility.js"></script>-->
+
+<script src="../build/pdf.js"></script>
+
+<script id="script">
+
+  //PDFJS.disableWorker = true;
+  var resolver = null;
+
+  pdfs=[{
+    url:"./appmobile.pdf",
+    pages:[7,2]
+  },{
+    url:"./inlineblock.pdf",
+    pages:[4,5,6]
+  },{
+    url:"./webcomponents.pdf",
+    pages:[1,16]
+  }];
+
+  var renderers = [];
+
+  function createRenderer(page, canvas){
+    return Object.create(page,{
+      canvas:{
+          value:canvas
+      },
+      scale:{
+        value:1,
+        writable:true
+      },
+      render: {
+        value:function(scale){
+          var page = Object.getPrototypeOf(this);
+          var scale = scale || this.scale;
+          var viewport = page.getViewport(scale);
+          this.canvas.height = viewport.height;
+          this.canvas.width = viewport.width;
+          return page.render({
+            canvasContext:this.canvas.getContext('2d'),
+            viewport:viewport
+          });
+        }
+      }
+    });
+  };
+
+  function renderPage(page){
+
+      var canvas   = document.createElement('canvas');
+      var renderer = createRenderer(page,canvas);
+      var result   = renderer.render();
+      document.body.appendChild(canvas);
+
+      renderers.push(renderer);
+
+      return result;
+  };
+
+  function renderMultiplePages(pages, pdf){
+    return new Promise(function(resolve, reject){
+      var pageChain = Promise.resolve(null);
+
+      pages.forEach(function(page){
+        pageChain = pageChain.then(pdf.getPage.bind(pdf, page)).then(renderPage);
+      });
+      pageChain.then(function(){
+        console.log('resolve');
+        resolve(pdf);
+      });
+    });
+  };
+
+
+  var chain = Promise.resolve(null);
+  pdfs.forEach(function(pdfMeta){
+    chain = chain.then(PDFJS.getDocument.bind(PDFJS, pdfMeta.url))
+                .then(renderMultiplePages.bind(undefined, pdfMeta.pages))
+                .then(function(pdf){
+                  console.log('terminate');
+                  pdf.transport.worker.terminate();
+                });
+  });
+
+</script>
+
+</body>
+</html>
