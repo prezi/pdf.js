@@ -712,7 +712,7 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       // we can.
       var width = this.ctx.canvas.width;
       var height = this.ctx.canvas.height;
-      if (transparency) {
+      if (transparency || true) { // HACK for transparent background
         this.ctx.clearRect(0, 0, width, height);
       } else {
         this.ctx.mozOpaque = true;
