@@ -38,8 +38,16 @@ var MAX_SIZE_TO_COMPILE = 1000;
 
 var FULL_CHUNK_HEIGHT = 16;
 
+function createCanvas() {
+  if (document._createCanvas) {
+    return document._createCanvas();
+  } else {
+    return document.createElement("canvas");
+  }
+}
+
 function createScratchCanvas(width, height) {
-  var canvas = document.createElement('canvas');
+  var canvas = createCanvas();
   canvas.width = width;
   canvas.height = height;
   return canvas;
