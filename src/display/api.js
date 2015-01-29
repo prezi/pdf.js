@@ -267,8 +267,8 @@ PDFJS.getDocument = function getDocument(src,
       var pdfBytes = source[key];
       if (typeof pdfBytes === 'string') {
         params[key] = stringToBytes(pdfBytes);
-      } else if (typeof pdfBytes === 'object' && pdfBytes !== null &&
-                 !isNaN(pdfBytes.length)) {
+      } else if ((typeof pdfBytes === 'object' && pdfBytes !== null &&
+                 !isNaN(pdfBytes.length)) || isArrayBuffer(pdfBytes)) {
         params[key] = new Uint8Array(pdfBytes);
       } else {
         error('Invalid PDF binary data: either typed array, string or ' +
