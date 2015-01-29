@@ -16,10 +16,10 @@
  */
 /* globals PDFJS, PDFBug, FirefoxCom, Stats, Cache, ProgressBar,
            DownloadManager, getFileName, scrollIntoView, getPDFFileNameFromURL,
-           PDFHistory, Preferences, SidebarView, ViewHistory, PageView,
+           PDFHistory, Preferences, SidebarView, ViewHistory, Stats,
            PDFThumbnailViewer, URL, noContextMenuHandler, SecondaryToolbar,
            PasswordPrompt, PresentationMode, HandTool, Promise,
-           DocumentProperties, DocumentOutlineView, DocumentAttachmentsView,
+           DocumentProperties, PDFOutlineView, PDFAttachmentView,
            OverlayManager, PDFFindController, PDFFindBar, getVisibleElements,
            watchScroll, PDFViewer, PDFRenderingQueue, PresentationModeState,
            RenderingStates, DEFAULT_SCALE, UNKNOWN_SCALE,
@@ -35,6 +35,7 @@ var VIEW_HISTORY_MEMORY = 20;
 var SCALE_SELECT_CONTAINER_PADDING = 8;
 var SCALE_SELECT_PADDING = 22;
 var PAGE_NUMBER_LOADING_INDICATOR = 'visiblePageIsLoading';
+var DISABLE_AUTO_FETCH_LOADING_BAR_TIMEOUT = 5000;
 //#if B2G
 //PDFJS.useOnlyCssZoom = true;
 //PDFJS.disableTextLayer = true;
@@ -84,6 +85,9 @@ var mozL10n = document.mozL10n || document.webL10n;
 //#include password_prompt.js
 //#include document_properties.js
 //#include pdf_viewer.js
+//#include pdf_thumbnail_viewer.js
+//#include pdf_outline_view.js
+//#include pdf_attachment_view.js
 
 var PDFViewerApplication = {
   initialBookmark: document.location.hash.substring(1),
@@ -372,66 +376,17 @@ var PDFViewerApplication = {
 
 //#if (FIREFOX || MOZCENTRAL)
   initPassiveLoading: function pdfViewInitPassiveLoading() {
-    var pdfDataRangeTransportReadyResolve;
-    var pdfDataRangeTransportReady = new Promise(function (resolve) {
-      pdfDataRangeTransportReadyResolve = resolve;
-    });
-    var pdfDataRangeTransport = {
-      rangeListeners: [],
-      progressListeners: [],
-      progressiveReadListeners: [],
-      ready: pdfDataRangeTransportReady,
-
-      addRangeListener: function PdfDataRangeTransport_addRangeListener(
-                                   listener) {
-        this.rangeListeners.push(listener);
-      },
-
-      addProgressListener: function PdfDataRangeTransport_addProgressListener(
-                                      listener) {
-        this.progressListeners.push(listener);
-      },
-
-      addProgressiveReadListener:
-          function PdfDataRangeTransport_addProgressiveReadListener(listener) {
-        this.progressiveReadListeners.push(listener);
-      },
-
-      onDataRange: function PdfDataRangeTransport_onDataRange(begin, chunk) {
-        var listeners = this.rangeListeners;
-        for (var i = 0, n = listeners.length; i < n; ++i) {
-          listeners[i](begin, chunk);
-        }
-      },
-
-      onDataProgress: function PdfDataRangeTransport_onDataProgress(loaded) {
-        this.ready.then(function () {
-          var listeners = this.progressListeners;
-          for (var i = 0, n = listeners.length; i < n; ++i) {
-            listeners[i](loaded);
-          }
-        }.bind(this));
-      },
-
-      onDataProgressiveRead:
-          function PdfDataRangeTransport_onDataProgress(chunk) {
-        this.ready.then(function () {
-          var listeners = this.progressiveReadListeners;
-          for (var i = 0, n = listeners.length; i < n; ++i) {
-            listeners[i](chunk);
-          }
-        }.bind(this));
-      },
-
-      transportReady: function PdfDataRangeTransport_transportReady() {
-        pdfDataRangeTransportReadyResolve();
-      },
-
-      requestDataRange: function PdfDataRangeTransport_requestDataRange(
-                                  begin, end) {
-        FirefoxCom.request('requestDataRange', { begin: begin, end: end });
-      }
+    function FirefoxComDataRangeTransport(length, initialData) {
+      PDFJS.PDFDataRangeTransport.call(this, length, initialData);
+    }
+    FirefoxComDataRangeTransport.prototype =
+      Object.create(PDFJS.PDFDataRangeTransport.prototype);
+    FirefoxComDataRangeTransport.prototype.requestDataRange =
+        function FirefoxComDataRangeTransport_requestDataRange(begin, end) {
+      FirefoxCom.request('requestDataRange', { begin: begin, end: end });
     };
+
+    var pdfDataRangeTransport;
 
     window.addEventListener('message', function windowMessage(e) {
       if (e.source !== null) {
@@ -446,11 +401,15 @@ var PDFViewerApplication = {
       }
       switch (args.pdfjsLoadAction) {
         case 'supportsRangedLoading':
+          pdfDataRangeTransport =
+            new FirefoxComDataRangeTransport(args.length, args.data);
+
           PDFViewerApplication.open(args.pdfUrl, 0, undefined,
-                                    pdfDataRangeTransport, {
-            length: args.length,
-            initialData: args.data
-          });
+                                    pdfDataRangeTransport);
+
+          if (args.length) {
+            DocumentProperties.setFileSize(args.length);
+          }
           break;
         case 'range':
           pdfDataRangeTransport.onDataRange(args.begin, args.chunk);
@@ -859,6 +818,24 @@ var PDFViewerApplication = {
     // increases.
     if (percent > this.loadingBar.percent || isNaN(percent)) {
       this.loadingBar.percent = percent;
+
+      // When disableAutoFetch is enabled, it's not uncommon for the entire file
+      // to never be fetched (depends on e.g. the file structure). In this case
+      // the loading bar will not be completely filled, nor will it be hidden.
+      // To prevent displaying a partially filled loading bar permanently, we
+      // hide it when no data has been loaded during a certain amount of time.
+      if (PDFJS.disableAutoFetch && percent) {
+        if (this.disableAutoFetchLoadingBarTimeout) {
+          clearTimeout(this.disableAutoFetchLoadingBarTimeout);
+          this.disableAutoFetchLoadingBarTimeout = null;
+        }
+        this.loadingBar.show();
+
+        this.disableAutoFetchLoadingBarTimeout = setTimeout(function () {
+          this.loadingBar.hide();
+          this.disableAutoFetchLoadingBarTimeout = null;
+        }.bind(this), DISABLE_AUTO_FETCH_LOADING_BAR_TIMEOUT);
+      }
     }
   },
 
@@ -877,8 +854,6 @@ var PDFViewerApplication = {
     var downloadedPromise = pdfDocument.getDownloadInfo().then(function() {
       self.downloadComplete = true;
       self.loadingBar.hide();
-      var outerContainer = document.getElementById('outerContainer');
-      outerContainer.classList.remove('loadingInProgress');
     });
 
     var pagesCount = pdfDocument.numPages;
@@ -992,15 +967,16 @@ var PDFViewerApplication = {
     var promises = [pagesPromise, this.animationStartedPromise];
     Promise.all(promises).then(function() {
       pdfDocument.getOutline().then(function(outline) {
-        var outlineView = document.getElementById('outlineView');
-        self.outline = new DocumentOutlineView({
+        var container = document.getElementById('outlineView');
+        self.outline = new PDFOutlineView({
+          container: container,
           outline: outline,
-          outlineView: outlineView,
           linkService: self
         });
+        self.outline.render();
         document.getElementById('viewOutline').disabled = !outline;
 
-        if (!outline && !outlineView.classList.contains('hidden')) {
+        if (!outline && !container.classList.contains('hidden')) {
           self.switchSidebarView('thumbs');
         }
         if (outline &&
@@ -1009,14 +985,16 @@ var PDFViewerApplication = {
         }
       });
       pdfDocument.getAttachments().then(function(attachments) {
-        var attachmentsView = document.getElementById('attachmentsView');
-        self.attachments = new DocumentAttachmentsView({
+        var container = document.getElementById('attachmentsView');
+        self.attachments = new PDFAttachmentView({
+          container: container,
           attachments: attachments,
-          attachmentsView: attachmentsView
+          downloadManager: new DownloadManager()
         });
+        self.attachments.render();
         document.getElementById('viewAttachments').disabled = !attachments;
 
-        if (!attachments && !attachmentsView.classList.contains('hidden')) {
+        if (!attachments && !container.classList.contains('hidden')) {
           self.switchSidebarView('thumbs');
         }
         if (attachments &&
@@ -1336,7 +1314,6 @@ var PDFViewerApplication = {
 
   rotatePages: function pdfViewRotatePages(delta) {
     var pageNumber = this.page;
-
     this.pageRotation = (this.pageRotation + 360 + delta) % 360;
     this.pdfViewer.pagesRotation = this.pageRotation;
     this.pdfThumbnailViewer.pagesRotation = this.pageRotation;
@@ -1417,10 +1394,6 @@ var PDFViewerApplication = {
 //#if GENERIC
 window.PDFView = PDFViewerApplication; // obsolete name, using it as an alias
 //#endif
-
-//#include thumbnail_view.js
-//#include document_outline_view.js
-//#include document_attachments_view.js
 
 //#if CHROME
 //(function rewriteUrlClosure() {
@@ -1714,23 +1687,16 @@ function webViewerInitialized() {
 document.addEventListener('DOMContentLoaded', webViewerLoad, true);
 
 document.addEventListener('pagerendered', function (e) {
-  var pageIndex = e.detail.pageNumber - 1;
+  var pageNumber = e.detail.pageNumber;
+  var pageIndex = pageNumber - 1;
   var pageView = PDFViewerApplication.pdfViewer.getPageView(pageIndex);
   var thumbnailView = PDFViewerApplication.pdfThumbnailViewer.
                       getThumbnail(pageIndex);
-  thumbnailView.setImage(pageView.canvas);
+  thumbnailView.setImage(pageView);
 
-//#if (FIREFOX || MOZCENTRAL)
-//if (pageView.textLayer && pageView.textLayer.textDivs &&
-//    pageView.textLayer.textDivs.length > 0 &&
-//    !PDFViewerApplication.supportsDocumentColors) {
-//  console.error(mozL10n.get('document_colors_disabled', null,
-//    'PDF documents are not allowed to use their own colors: ' +
-//    '\'Allow pages to choose their own colors\' ' +
-//    'is deactivated in the browser.'));
-//  PDFViewerApplication.fallback();
-//}
-//#endif
+  if (PDFJS.pdfBug && Stats.enabled && pageView.stats) {
+    Stats.add(pageNumber, pageView.stats);
+  }
 
   if (pageView.error) {
     PDFViewerApplication.error(mozL10n.get('rendering_error', null,
@@ -1752,10 +1718,27 @@ document.addEventListener('pagerendered', function (e) {
 
   // If the page is still visible when it has finished rendering,
   // ensure that the page number input loading indicator is hidden.
-  if ((pageIndex + 1) === PDFViewerApplication.page) {
+  if (pageNumber === PDFViewerApplication.page) {
     var pageNumberInput = document.getElementById('pageNumber');
     pageNumberInput.classList.remove(PAGE_NUMBER_LOADING_INDICATOR);
   }
+}, true);
+
+document.addEventListener('textlayerrendered', function (e) {
+  var pageIndex = e.detail.pageNumber - 1;
+  var pageView = PDFViewerApplication.pdfViewer.getPageView(pageIndex);
+
+//#if (FIREFOX || MOZCENTRAL)
+//if (pageView.textLayer && pageView.textLayer.textDivs &&
+//    pageView.textLayer.textDivs.length > 0 &&
+//    !PDFViewerApplication.supportsDocumentColors) {
+//  console.error(mozL10n.get('document_colors_disabled', null,
+//    'PDF documents are not allowed to use their own colors: ' +
+//    '\'Allow pages to choose their own colors\' ' +
+//    'is deactivated in the browser.'));
+//  PDFViewerApplication.fallback();
+//}
+//#endif
 }, true);
 
 window.addEventListener('presentationmodechanged', function (e) {
@@ -1927,7 +1910,9 @@ window.addEventListener('scalechange', function scalechange(evt) {
 
   var predefinedValueFound = selectScaleOption('' + evt.scale);
   if (!predefinedValueFound) {
-    customScaleOption.textContent = Math.round(evt.scale * 10000) / 100 + '%';
+    var customScale = Math.round(evt.scale * 10000) / 100;
+    customScaleOption.textContent =
+      mozL10n.get('page_scale_percent', { scale: customScale }, '{{scale}}%');
     customScaleOption.selected = true;
   }
   updateViewarea();
@@ -1946,6 +1931,14 @@ window.addEventListener('pagechange', function pagechange(evt) {
 
   document.getElementById('firstPage').disabled = (page <= 1);
   document.getElementById('lastPage').disabled = (page >= numPages);
+
+  // we need to update stats
+  if (PDFJS.pdfBug && Stats.enabled) {
+    var pageView = PDFViewerApplication.pdfViewer.getPageView(page - 1);
+    if (pageView.stats) {
+      Stats.add(page, pageView.stats);
+    }
+  }
 
   // checking if the this.page was called from the updateViewarea function
   if (evt.updateInProgress) {
@@ -2005,9 +1998,9 @@ window.addEventListener('keydown', function keydown(evt) {
   if (cmd === 1 || cmd === 8 || cmd === 5 || cmd === 12) {
     // either CTRL or META key with optional SHIFT.
     var pdfViewer = PDFViewerApplication.pdfViewer;
-    var inPresentationMode =
-      pdfViewer.presentationModeState === PresentationModeState.CHANGING ||
-      pdfViewer.presentationModeState === PresentationModeState.FULLSCREEN;
+    var inPresentationMode = pdfViewer &&
+      (pdfViewer.presentationModeState === PresentationModeState.CHANGING ||
+       pdfViewer.presentationModeState === PresentationModeState.FULLSCREEN);
 
     switch (evt.keyCode) {
       case 70: // f
@@ -2265,11 +2258,14 @@ window.addEventListener('afterprint', function afterPrint(evt) {
 //  var fileURL = activity.source.data.url;
 //
 //  var url = URL.createObjectURL(blob);
-//  PDFViewerApplication.open({url : url, originalUrl: fileURL});
+//  // We need to delay opening until all HTML is loaded.
+//  PDFViewerApplication.animationStartedPromise.then(function () {
+//    PDFViewerApplication.open({url : url, originalUrl: fileURL});
 //
-//  var header = document.getElementById('header');
-//  header.addEventListener('action', function() {
-//    activity.postResult('close');
+//    var header = document.getElementById('header');
+//    header.addEventListener('action', function() {
+//      activity.postResult('close');
+//    });
 //  });
 //});
 //#endif

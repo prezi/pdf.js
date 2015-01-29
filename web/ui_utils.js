@@ -22,7 +22,6 @@ var UNKNOWN_SCALE = 0;
 var MAX_AUTO_SCALE = 1.25;
 var SCROLLBAR_PADDING = 40;
 var VERTICAL_PADDING = 5;
-var DEFAULT_CACHE_SIZE = 10;
 
 // optimised CSS custom property getter/setter
 var CustomStyle = (function CustomStyleClosure() {
@@ -275,6 +274,7 @@ var ProgressBar = (function ProgressBarClosure() {
   }
 
   function ProgressBar(id, opts) {
+    this.visible = true;
 
     // Fetch the sub-elements for later.
     this.div = document.querySelector(id + ' .progress');
@@ -328,30 +328,23 @@ var ProgressBar = (function ProgressBarClosure() {
     },
 
     hide: function ProgressBar_hide() {
+      if (!this.visible) {
+        return;
+      }
+      this.visible = false;
       this.bar.classList.add('hidden');
-      this.bar.removeAttribute('style');
+      document.body.classList.remove('loadingInProgress');
+    },
+
+    show: function ProgressBar_show() {
+      if (this.visible) {
+        return;
+      }
+      this.visible = true;
+      document.body.classList.add('loadingInProgress');
+      this.bar.classList.remove('hidden');
     }
   };
 
   return ProgressBar;
 })();
-
-var Cache = function cacheCache(size) {
-  var data = [];
-  this.push = function cachePush(view) {
-    var i = data.indexOf(view);
-    if (i >= 0) {
-      data.splice(i, 1);
-    }
-    data.push(view);
-    if (data.length > size) {
-      data.shift().destroy();
-    }
-  };
-  this.resize = function (newSize) {
-    size = newSize;
-    while (data.length > size) {
-      data.shift().destroy();
-    }
-  };
-};
